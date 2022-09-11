@@ -4,7 +4,9 @@
 import argparse
 import re
 import subprocess
-from typing import List
+from typing import List, Optional, Tuple
+
+import dbus
 
 
 class Sink:
@@ -78,7 +80,51 @@ def switch_to_next_sink(sinks: List[Sink], notify: bool) -> None:
     switch_to_sink(sink=next_sink, notify=notify)
 
 
-def switch_to_sink_with_name(sinks: List[Sink], notify: bool, device_name: str) -> None:
+def switch_to_next_sink_from_group(sinks: List[Sink], match_group: List[str], notify: bool) -> None:
+    """
+    Use a group of matches to rotate between their matching sinks
+
+    For example, given ["DAC", "MV7"] as a group of matches, this function will switch to the sink
+    that matches the next element in the group.
+
+    To keep track of the current selected sink, this function stores the match that was found in
+    a file (it looks like the `selected` property does not work properly)
+    """
+    try:
+        with open("/tmp/sink_switch_storage", "r") as f:
+            file_content = f.read().split(",")
+
+            if len(file_content) == 2:
+                current_match, notification_id = file_content
+            else:
+                current_match, notification_id = None, 0
+    except FileNotFoundError:
+        current_match, notification_id = None, 0
+
+    if current_match in match_group:
+        for index, value in enumerate(match_group):
+            print(f"index: {index}, value: {value}")
+            if value == current_match:
+                next_index = (index + 1) % len(match_group)
+                next_value = match_group[next_index]
+                break
+    else:
+        next_value = match_group[0]
+
+    switched, new_notification_id = switch_to_sink_with_name(
+        sinks=sinks, notify=notify, device_name=next_value, notification_id=notification_id
+    )
+    if switched:
+        with open("/tmp/sink_switch_storage", "w+") as f:
+            f.write(f"{next_value},{new_notification_id}")
+
+
+def switch_to_sink_with_name(
+    sinks: List[Sink],
+    notify: bool,
+    device_name: str,
+    notification_id: Optional[int]
+) -> Tuple[bool, Optional[int]]:
     """
     Switch default sink to the first sink that matches the given device_name
 
@@ -87,13 +133,20 @@ def switch_to_sink_with_name(sinks: List[Sink], notify: bool, device_name: str) 
     for sink in sinks:
         if hasattr(sink, "name"):
             if sink.name.find(device_name) != -1:
-                switch_to_sink(sink=sink, notify=notify)
-                return
+                notification_id = switch_to_sink(
+                    sink=sink, notify=notify, notification_id=notification_id
+                )
+                return True, notification_id
     if notify:
-        subprocess.call(["notify-send", f"No device found with name {device_name}"])
+        notification_id = send_notification(
+            message=f"No device with name {device_name} found",
+            notification_id=notification_id
+        )
+
+    return False, notification_id
 
 
-def switch_to_sink(sink: Sink, notify: bool) -> None:
+def switch_to_sink(sink: Sink, notify: bool, notification_id: Optional[int]) -> Optional[int]:
     """
     Switch default sink to the given sink and make all the applications to use it
 
@@ -104,7 +157,14 @@ def switch_to_sink(sink: Sink, notify: bool) -> None:
     for sink_input in get_sink_inputs():
         subprocess.call(["pacmd", "move-sink-input", str(sink_input.index), str(sink.index)])
     if notify:
-        subprocess.call(["notify-send", "Changed audio sink", "new audio sink is " + sink.name])
+        return send_notification(message=sink.name, notification_id=notification_id)
+
+
+def send_notification(message: str, notification_id: Optional[int]) -> int:
+    replacement_id: int = notification_id or 0
+    obj = dbus.SessionBus().get_object("org.freedesktop.Notifications", "/org/freedesktop/Notifications")
+    obj = dbus.Interface(obj, "org.freedesktop.Notifications")
+    return obj.Notify("", replacement_id, "", message, "", [], {"urgency": 1}, 1000)
 
 
 def main() -> None:
@@ -117,13 +177,15 @@ def main() -> None:
                         help='List all the pacmd list-sinks and list-sink-inputs', action='store_true')
     parser.add_argument('-m', '--match',
                         help='Activate first sink that matches the given name', type=str)
+    parser.add_argument('-mg', '--match-next-group',
+                        help='Activate the next sink in group that matches the given name', nargs='+')
 
     parser.add_argument('-n', '--notify', help='Send notification to the desktop', action='store_true')
 
     args = parser.parse_args()
 
     sinks = get_sinks()
-    if args.state:
+    if args.list:
         for sink in sinks:
             print(sink)
         sink_inputs = get_sink_inputs()
@@ -131,6 +193,10 @@ def main() -> None:
             print(sink_input)
     elif args.match:
         switch_to_sink_with_name(sinks=sinks, device_name=args.match, notify=args.notify)
+    elif args.match_next_group:
+        switch_to_next_sink_from_group(
+            sinks=sinks, match_group=args.match_next_group, notify=args.notify
+        )
     else:
         switch_to_next_sink(sinks, args.notify)
 
