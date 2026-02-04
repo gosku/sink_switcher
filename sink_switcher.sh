@@ -5,13 +5,27 @@ CURRENT_SINK=$(wpctl inspect @DEFAULT_SINK@ | grep -m 1 "id" | awk '{print $2}' 
 
 # 2. Get the IDs for your specific devices
 ID_SHURE=$(wpctl status | grep "Shure MV7 Analog Stereo" | grep -oP '\d+(?=\.)' | head -n 1)
-ID_DAC=$(wpctl status | grep "PCM2704 16-bit stereo audio DAC Digital Stereo" | grep -oP '\d+(?=\.)' | head -n 1)
+ID_DAC=$(wpctl status | grep "PCM2704 16-bit stereo audio DAC Analog Stereo" | grep -oP '\d+(?=\.)' | head -n 1)
 
 # 3. Toggle Logic
 if [ "$CURRENT_SINK" == "$ID_SHURE" ]; then
     wpctl set-default "$ID_DAC"
-    notify-send "Audio Output" "Switched to: DAC (PCM2704)" --icon=audio-speakers
+    MESSAGE="Switched to: DAC (PCM2704)"
+    ICON="audio-speakers"
 else
     wpctl set-default "$ID_SHURE"
-    notify-send "Audio Output" "Switched to: Shure MV7" --icon=audio-card
+    MESSAGE="Switched to: Shure MV7"
+    ICON="audio-card"
 fi
+
+# 4. Notification Logic
+NOTIF_ID_FILE="/tmp/sink_switcher_notification_id"
+REPLACE_ARG=""
+
+if [ -f "$NOTIF_ID_FILE" ]; then
+    REPLACE_ID=$(cat "$NOTIF_ID_FILE")
+    REPLACE_ARG="-r $REPLACE_ID"
+fi
+
+NEW_ID=$(notify-send -p $REPLACE_ARG "Audio Output" "$MESSAGE" --icon="$ICON")
+echo "$NEW_ID" > "$NOTIF_ID_FILE"
